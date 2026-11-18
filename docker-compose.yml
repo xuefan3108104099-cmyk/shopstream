@@ -1,0 +1,291 @@
+##############################################################################
+# ShopStream - full stack for "docker compose up --build"
+#
+# Only the gateway port (8080) is published to the host.
+# Every other service and every infrastructure container stays on the internal
+# "shopstream" network and is reachable by its service name.
+##############################################################################
+name: shopstream
+
+networks:
+  shopstream:
+    driver: bridge
+
+volumes:
+  product-db-data:
+  order-db-data:
+  kafka-data:
+  es-data:
+  redis-data:
+
+services:
+  # ----------------------------- infrastructure -----------------------------
+  mysql-product:
+    image: mysql:8.4
+    container_name: mysql-product
+    environment:
+      MYSQL_ROOT_PASSWORD: root-secret
+      MYSQL_DATABASE: productdb
+      MYSQL_USER: shop
+      MYSQL_PASSWORD: shop
+    volumes:
+      - product-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot-secret"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks: [shopstream]
+
+  mysql-order:
+    image: mysql:8.4
+    container_name: mysql-order
+    environment:
+      MYSQL_ROOT_PASSWORD: root-secret
+      MYSQL_DATABASE: orderdb
+      MYSQL_USER: shop
+      MYSQL_PASSWORD: shop
+    volumes:
+      - order-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot-secret"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks: [shopstream]
+
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: kafka
+    environment:
+      # KRaft mode - one node acting as broker + controller, no ZooKeeper.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+    networks: [shopstream]
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+      bootstrap.memory_lock: "true"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    networks: [shopstream]
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: redis
+    command: ["redis-server", "--requirepass", "redis-secret", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis-secret", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [shopstream]
+
+  # --------------------------- platform services ----------------------------
+  discovery-server:
+    build: ./discovery-server
+    container_name: discovery-server
+    environment:
+      SERVER_PORT: 8761
+      EUREKA_HOSTNAME: discovery-server
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8761/eureka/apps > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks: [shopstream]
+
+  config-server:
+    build: ./config-server
+    container_name: config-server
+    environment:
+      SERVER_PORT: 8888
+      SPRING_PROFILES_ACTIVE: native
+      CONFIG_REPO_PATH: file:/config-repo
+      EUREKA_URL: http://discovery-server:8761/eureka
+    volumes:
+      - ./config-repo:/config-repo:ro
+    healthcheck:
+      # the config endpoint must really answer before any service may start
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8888/application/default > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    networks: [shopstream]
+
+  api-gateway:
+    build: ./api-gateway
+    container_name: api-gateway
+    environment: &common-env
+      SERVER_PORT: 8080
+      CONFIG_SERVER_URL: http://config-server:8888
+      EUREKA_URL: http://discovery-server:8761/eureka
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: redis-secret
+      ELASTICSEARCH_URIS: http://elasticsearch:9200
+      PRODUCT_DB_URL: jdbc:mysql://mysql-product:3306/productdb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      PRODUCT_DB_USER: shop
+      PRODUCT_DB_PASSWORD: shop
+      ORDER_DB_URL: jdbc:mysql://mysql-order:3306/orderdb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      ORDER_DB_USER: shop
+      ORDER_DB_PASSWORD: shop
+    ports:
+      - "8080:8080"
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks: [shopstream]
+
+  # "one instance per service is enough for discovery; product-service runs twice"
+  product-service-1:
+    build: ./product-service
+    container_name: product-service-1
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8081
+      INSTANCE_LABEL: product-1
+    depends_on:
+      mysql-product:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks: [shopstream]
+
+  product-service-2:
+    build: ./product-service
+    container_name: product-service-2
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8081
+      INSTANCE_LABEL: product-2
+    depends_on:
+      mysql-product:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks: [shopstream]
+
+  order-service:
+    build: ./order-service
+    container_name: order-service
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8082
+    depends_on:
+      mysql-order:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks: [shopstream]
+
+  cart-service:
+    build: ./cart-service
+    container_name: cart-service
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8083
+    depends_on:
+      redis:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks: [shopstream]
+
+  search-service:
+    build: ./search-service
+    container_name: search-service
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8084
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks: [shopstream]
+
+  notification-service:
+    build: ./notification-service
+    container_name: notification-service
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8085
+    depends_on:
+      kafka:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks: [shopstream]

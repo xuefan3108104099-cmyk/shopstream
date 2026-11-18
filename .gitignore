@@ -1,0 +1,23 @@
+# ---- build output ----
+target/
+!.mvn/wrapper/maven-wrapper.jar
+*.class
+
+# ---- local tooling (Maven is installed here on my machine for verification) ----
+.tools/
+
+# ---- IDE ----
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- logs ----
+*.log
+logs/

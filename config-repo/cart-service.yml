@@ -1,0 +1,15 @@
+server:
+  port: 8083
+
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:redis-secret}
+      timeout: 2s
+
+app:
+  cart:
+    # Carts disappear after 1 hour of inactivity (written in README as well).
+    ttl-seconds: 3600

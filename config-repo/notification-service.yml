@@ -1,0 +1,7 @@
+server:
+  port: 8085
+
+app:
+  notification:
+    from-address: shopstream@example.com
+    log-only: true

@@ -1,0 +1,22 @@
+server:
+  port: 8082
+
+spring:
+  datasource:
+    url: ${ORDER_DB_URL:jdbc:mysql://localhost:3306/orderdb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
+    username: ${ORDER_DB_USER:shop}
+    password: ${ORDER_DB_PASSWORD:shop}
+    hikari:
+      maximum-pool-size: 10
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+
+# Feign calls product-service by service name only (no host/port here).
+app:
+  order:
+    payment-currency: EUR

@@ -1,0 +1,13 @@
+server:
+  port: 8084
+
+spring:
+  elasticsearch:
+    uris: ${ELASTICSEARCH_URIS:http://localhost:9200}
+    connection-timeout: 5s
+    socket-timeout: 10s
+
+app:
+  search:
+    index-name: products
+    default-page-size: 10
